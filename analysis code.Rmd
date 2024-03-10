@@ -1,0 +1,279 @@
+---
+title: "R Notebook"
+author: Chunhui Gu
+email: chunhui.gu@uth.tmc.edu
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(summarytools)
+library(crosstable)
+```
+
+```{r}
+dat_all <- read_excel('paper list.xlsx', col_types = 'text')
+author_affiliation <- read_excel('authorAddress.xlsx', col_type = 'text')
+```
+
+
+```{r}
+author_affiliation <- author_affiliation %>% 
+  mutate(statistician_collaboration = str_detect(author_affiliation$affiliation, regex('mathematics|statistics|epidemiology', ignore_case = TRUE)))
+
+# |data science|computer science|mathematics|quantitative science|bioinformatics
+sum(author_affiliation$statistician_collaboration, na.rm = TRUE)
+```
+
+
+```{r}
+dat_all
+```
+```{r}
+colnames(dat_all)
+```
+
+```{r}
+# a total 213 was excluded
+sum(!is.na(dat_all$`reason for excluding`))
+
+# 158 papers were excluded due to ....
+sum(dat_all$included == 2)
+
+# 55 paper was excluded due to not use PSM method 
+sum(dat_all$included == 3)
+
+table(dat_all$`reason for excluding`)
+```
+
+
+```{r}
+table(dat_all$included)
+```
+
+
+```{r}
+dat <- dat_all %>% filter(included == 1)
+```
+
+
+
+Combine the author affiliation information
+```{r}
+dat <- left_join(dat, author_affiliation[, -2], by = 'title')
+```
+
+
+
+
+```{r}
+dat$`sample_size` <- as.numeric(dat$sample_size)
+```
+
+define large-size study as sample size >= 10,000
+```{r}
+dat <- dat %>% mutate('large_size_study' = ifelse(`sample_size` >= 1000, 1, 0))
+
+dat <- dat %>% mutate(sample_size_range = ifelse(`sample_size` > 100000, '> 100,000', 
+                                           ifelse(sample_size > 10000, '10, 001 ~ 100, 000', 
+                                            ifelse(sample_size > 1000, '1001 ~ 10, 000', '1 ~ 1000')))) %>% 
+  mutate(sample_size_range = factor(sample_size_range, 
+                                       levels = c('1 ~ 1000',
+                                                  '1001 ~ 10, 000', 
+                                                  '10, 001 ~ 100, 000',
+                                                  '> 100,000')))
+```
+
+
+record variable replacement
+```{r}
+dat <- dat %>% mutate(replacement = recode(replacement, `w` = 'with replacement', `w/o` = 'without replacement'))
+```
+
+
+create new categorical variables with less levels based on existing variables 
+```{r}
+STUDY_DESIGNS <- c('cohort study', 'prospective cohort study', 'retrospective cohort study', 'case-control study', 'cannot decided')
+
+dat <- dat %>% mutate(
+  # collapse ratio that equal to or greater than 1:4 as one category 
+  ratio_category = ifelse(str_detect(ratio, '1:([4-9]|10)'), '4 or more control matched per treatment unit', ratio),
+  study_design_type = ifelse(`study design type` %in% STUDY_DESIGNS, `study design type`, 'Others')
+  
+)
+```
+
+
+recode the variable
+as NO, NA, unclear means the same thing
+```{r}
+MISSING <- c('NO', 'NA', 'unclear', 'Not available')
+NOT_AVAILABLE <- 'Not available'
+
+dat <- dat %>% 
+  mutate(justification_of_covariates_selection = ifelse(justification_of_covariates_selection %in% MISSING, NOT_AVAILABLE, justification_of_covariates_selection),
+  handling_of_missing_data = ifelse(handling_of_missing_data %in% MISSING, NOT_AVAILABLE, handling_of_missing_data),
+  matching_algorithm = ifelse(matching_algorithm %in% MISSING, NOT_AVAILABLE, matching_algorithm),
+  ratio = ifelse(ratio %in% MISSING, NOT_AVAILABLE, ratio),
+  replacement = ifelse(replacement %in% MISSING, NOT_AVAILABLE, replacement),
+  caliper = ifelse(caliper %in% MISSING, NOT_AVAILABLE, 'YES'),
+  propensity_score_model = ifelse(propensity_score_model %in% MISSING, NOT_AVAILABLE, propensity_score_model),
+  balance_diagnosis = ifelse(balance_diagnosis %in% MISSING, NOT_AVAILABLE, balance_diagnosis),
+  robust_method_mentioned = ifelse(robust_method_mentioned %in% MISSING, NOT_AVAILABLE, robust_method_mentioned),
+  treatment_effect = ifelse(treatment_effect %in% MISSING, NOT_AVAILABLE, treatment_effect),
+  analysis_software = ifelse(analysis_software %in% MISSING, NOT_AVAILABLE, analysis_software),
+  PSM_software = ifelse(PSM_software %in% MISSING, NOT_AVAILABLE, PSM_software),
+  PSM_software_lite = ifelse(PSM_software_lite %in% MISSING, NOT_AVAILABLE, PSM_software_lite),
+  )
+```
+
+
+
+```{r}
+dat <- dat %>% 
+  mutate(
+    handling_of_missing_binary = ifelse(`handling_of_missing_data` == NOT_AVAILABLE, 0, 1),
+    reporting_of_covariates_binary = ifelse(`covariates` == 'unclear', 0, 1),
+    covariate_selection_justifiaction_binary = ifelse(`justification_of_covariates_selection` == NOT_AVAILABLE, 0, 1),
+    prop_model_binary = ifelse(`propensity_score_model` == NOT_AVAILABLE, 0, 1),
+    matching_algorithm_binary = ifelse(`matching_algorithm`  == NOT_AVAILABLE, 0, 1),
+    ratio_binary = ifelse(`ratio` == NOT_AVAILABLE, 0, 1),
+    replacement_binary = ifelse(`replacement` == NOT_AVAILABLE, 0, 1),
+    caliper_binary = ifelse(`caliper` == NOT_AVAILABLE, 0, 1),
+    diagnosis_binary = ifelse(`balance_diagnosis` == NOT_AVAILABLE, 0, 1),
+    robust_method_binary = ifelse(`robust_method_mentioned` == NOT_AVAILABLE, 0, 1),
+    ATT_mentioned_binary = ifelse(`treatment_effect` == NOT_AVAILABLE, 0, 1),
+    reproductivity_score =  reporting_of_covariates_binary + prop_model_binary +
+      matching_algorithm_binary + ratio_binary + replacement_binary + diagnosis_binary)
+```
+
+```{r}
+dat$reproductivity_score <- as.factor(dat$reproductivity_score)
+```
+
+
+Use regular expression to recode some variables
+```{r}
+dat <- dat %>% mutate(
+  SMD_use = ifelse(balance_diagnosis == NOT_AVAILABLE, NOT_AVAILABLE, 
+                   ifelse(str_detect(balance_diagnosis, regex('SMD', ignore_case=T)), 'YES', 'NO'))
+)
+
+dat <- dat %>% mutate(
+  analysis_software_traditional_type = ifelse(str_detect(analysis_software, regex('R software', ignore_case = T)), 'R software',
+                             ifelse(analysis_software == 'Not available', 'Not available', 'traditional')),
+  analysis_software_type_SPSS = ifelse(str_detect(analysis_software, regex('SPSS', ignore_case = T)), 'SPSS',
+                             ifelse(analysis_software == 'Not available', 'Not available', 'Others')),
+  analysis_software_popular_type = ifelse(str_detect(analysis_software, regex('R software|SPSS|SAS|STATA', ignore_case = T)), 'Top popular tools',
+                                               ifelse(analysis_software == 'Not available', 'Not available', 'sub-popular tools')),
+  
+  
+  
+  R_software = ifelse(str_detect(analysis_software,  regex('R software|python', ignore_case = T)), 'YES', 'NO'),
+  Python = ifelse(str_detect(analysis_software,  regex('python', ignore_case = T)), 'YES', 'NO'),
+  SPSS = ifelse(str_detect(analysis_software,  regex('SPSS', ignore_case = T)), 'YES', 'NO'),
+  SAS = ifelse(str_detect(analysis_software,  regex('SAS', ignore_case = T)), 'YES', 'NO'),
+  STATA = ifelse(str_detect(analysis_software,  regex('STATA', ignore_case = T)), 'YES', 'NO'),
+  
+  
+  
+  
+)
+
+# check the pattern recognization is correct
+# dat$analysis_software[str_detect(dat$analysis_software, regex('R software|python', ignore_case = T), negate = TRUE)]
+
+
+# categorize PSM software
+dat <- dat %>% mutate(
+  # PSM software
+  PSM_software_cat = ifelse(str_detect(PSM_software_lite, regex('R software|SAS|SPSS|STATA|Not available', ignore_case = TRUE)), PSM_software_lite, 'Others'),
+  
+  PSM_software_type = ifelse(PSM_software_cat == 'R software', 'R software',
+                             ifelse(PSM_software_cat == 'Not available', 'Not available', 'Others')),
+)
+
+
+
+```
+
+
+
+# Generate Table 2
+```{r}
+
+ANALYSIS_SOFTWARE <- c('R_software', 'Python', 'SPSS', 'SAS', 'STATA')
+
+dat_label <- data.frame(
+  name = c(
+  # article publication information
+  'year of publication',
+  # study design
+    
+  # PSM analysis components
+  'handling_of_missing_binary', 'reporting_of_covariates_binary',
+  'covariate_selection_justifiaction_binary',
+  'propensity score model', 'matching algorithm',
+  'ratio', 'replacement', 'caliper_binary', 'balance diagnosis',
+  'analysis model',
+  'robust method mentioned',
+  'treatment_effect',
+  'reproductivity_score'
+  ),
+  label = c(
+  # article publication information
+  'year published',
+  # study design
+    
+  # PSM analysis components
+  'handling of missing', 'reporting of covariates',
+  'covariate selection justification',
+  'propensity score model', 'matching algorithm', 
+  'ratio', 'replacement option', 'use of caliper', 'balance diagnosis',
+  'analysis model reporting',
+  'paired statistical methods',
+  'ATT mentioned',
+  'reproductivity score'))
+
+descriptive_table <- import_labels(dat %>% filter(!is.na(statistician_collaboration)), dat_label) %>% 
+ crosstable(cols = c(
+   'year',
+   'study_design_type',
+   # 'database based analysis',
+   'sample_size',
+  'large_size_study',
+  'sample_size_range',
+  'handling_of_missing_binary', 
+  'reporting_of_covariates_binary',
+  'covariate_selection_justifiaction_binary',
+  'propensity_score_model', 'matching_algorithm', 'ratio_category', 'replacement', 
+  'balance_diagnosis', 'SMD_use',
+  'robust_method_mentioned',
+  'treatment_effect',
+  'reproductivity_score',
+  'analysis_software_traditional_type',
+  'analysis_software_popular_type',
+  'PSM_software_type',
+  all_of(ANALYSIS_SOFTWARE),
+  PSM_software_cat,
+  
+  
+   # binary indicator variabels
+  'reporting_of_covariates_binary', 
+  'prop_model_binary',
+  'matching_algorithm_binary',
+  'ratio_binary', 
+  'replacement_binary',
+  'diagnosis_binary',
+  ), total = "row", margin = 'column', by='statistician_collaboration', test=TRUE)
+
+write_csv(descriptive_table, 'tables and figures/descriptive_table_statistician.csv')
+```
+
+
